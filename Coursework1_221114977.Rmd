@@ -1,0 +1,227 @@
+---
+title: "MTH6139 Time Series" 
+subtitle: "Coursework 1" 
+author: "Rujul Hrudaynath Godghate" 
+date: "Spring Term 2025" 
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: spacelab 
+    highlight: tango
+---
+ 
+```{r, echo=FALSE}
+# This code will display the QMUL logo at the top right of the page
+# Do not change this code
+htmltools::img(src = knitr::image_uri("images/QMlogo.png"),
+               alt = 'logo',
+               style = 'position:absolute; top:0; right:0; padding:10px; width:20%;')
+```
+
+# Section 1: Introduction
+
+This article explores a time series of New York Harbor's conventional regular gasoline weekly spot price FOB (in cents per gallon) from 2000 to mid-2010. 
+Daily gasoline prices are a critical indicator for the financial markets, as they serve as a benchmark and have a wide-reaching impact across all asset classes, not just commodities. Their prices have a wide-reaching impact on businesses as well as consumers. This article aims to analyse and forecast prices (based off given data, with Meta's Prophet), as it can: 
+
+- Help understand market dynamics in relation to geopolitical events and seasons
+- Analyse and capture volatility: commodity prices often have short-term volatility due to market speculation, so looking at a forecast in relation to many data points can help understand that.
+- Mitigate financial costs, by looking at what times of the year gasoline is cheaper
+
+First we retrieve our data and transform it into an appropriate *dataframe* format, as well as loading all required libraries. This can be seen below: 
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(prophet)
+library(ggplot2)
+library(dplyr)
+library(astsa)
+gas.df = data.frame(
+    ds=zoo::as.yearmon(time(gas)),
+    y=gas) # converts 'gas' time series into a dataframe, more appropriate for use in further analysis 
+```
+
+##
+# Section 2: Data Analysis 
+## 2.1 General Data & Linear Regression
+Below we have a graph of our current data, with a linear regression line. 
+Some **key observations are:** 
+
+- *Increase over Time*: It is clear from the upward-sloping linear regression line and data points that there is a general increase in gasoline prices over time. 
+- *Variability & Volatility*: However, the data points seem to be widely spread around the linear regression line suggesting a lot of fluctuations in prices, with clusters of volatility, especially around 2006-2010, perhaps because of the financial crisis. This is in contrast with stable prices around 2000-2003. 
+- *Real-world interpretations:* There is an overall increase, however, real-world factors have caused volatility and sharp spikes and drops in prices. 
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+ggplot(gas.df, aes(x = ds, y = y)) +    # Plotting data with linear regression line as well
+    geom_point(aes(color = "Actual Data"), size = 1) +
+    geom_smooth(method = "lm", formula = y ~ x,
+                aes(color = "Linear Regression Line"),
+                se = FALSE, linewidth = 1) +
+    scale_color_manual(name = "Legend",
+                       values = c("Actual Data" = "steelblue",
+                                  "Linear Regression Line" = "firebrick")) +
+    labs(title = "Gasoline Prices Over Time",
+         x = "Date",
+         y = "Price (¢/gallon)") +
+    theme_minimal() +
+    theme(legend.position = "bottom",
+          legend.title = element_text(face = "bold"))
+```
+
+## 2.2 Decomposition of the Time Series 
+
+Here we use the `astas` function to decompose our time series and observe how different components influence its behaviour. 
+
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+plot(decompose(gas)) # Decompose a time series into seasonal, trend and irregular components using moving averages. Deals with additive or multiplicative seasonal component.
+
+```
+
+- The *observed* series shows a general upward trend with fluctuations and a significant drop after a peak- around 2009, possible due to irregularities because of the financial crisis.
+- The *trend* component shows a steady increase until around 2008, possibly for the reasons stated before, followed by a sharp decline and a partial recovery.
+- The *seasonal* component exhibits a regular repeating pattern, suggesting strong seasonality in the data, with surge in demand in certain months.
+- The *random* component captures irregular fluctuations, with volatility increasing after 2006.
+
+## 2.3 Variance Stabilisation of Time Series
+
+Based off the plots of our data, there seems to be some heteroskedasticity present (the variance of the data changes through time). We can see this with a *Breusch-Pagan* test: 
+
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+library(lmtest) # Loading library for Breusche-Pagan test 
+bp_test <- bptest(lm(y ~ ds, data = gas.df)) # Breusche-Pagan test for variance testing
+print(bp_test)
+
+```
+ 
+Based off this result, we can see the p-value is very small, so we reject the null hypothesis. This means that there is heteroskedasticity present. 
+To address the problem of heteroskedasticity, one approach is to transform the data using a suitable function. Instead of considering the variable \( x_t \), we look at the transformed variable \( x^{new}_t = f(x_t) \), where \( f(x_t) \) is a function of the form given by the Box-Cox transformation.
+
+The *Box-Cox transformation* is given by the following family of functions:
+
+\[
+\text{BoxCox}(x_t) = 
+\begin{cases}
+\frac{x_t^\lambda - 1}{\lambda} & \text{if } \lambda \neq 0 \\
+\log(x_t) & \text{if } \lambda = 0
+\end{cases}
+\]
+
+These transformations are parameterised by \(\lambda\) and we choose the best \(\lambda\) by maximum likelihood using past data.
+
+Below, we have a transformed Box-Cox plot of the time series. 
+
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+# Box-Cox transformation
+lambda <- forecast::BoxCox.lambda(gas.df$y)
+gasBC = forecast::BoxCox(gas.df$y, lambda)
+plot(gasBC, main="Box-Cox Plot of Gasoline Prices")
+```
+
+The increasing \(\lambda\) values indicate that variance structure changed over the years, and perhaps 2008-2010 does not need as much stabilisation as previous years. 
+
+We can also analyse which components of the time series contribute to the variance the most:
+
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+decomp <- decompose(gas) # Labelling variable to look at each component's variance
+cat("Trend component variance:", var(decomp$trend, na.rm=TRUE), "\n")
+cat("Seasonal component variance:", var(decomp$seasonal, na.rm=TRUE), "\n")
+cat("Random component variance:", var(decomp$random, na.rm=TRUE), "\n")
+```
+
+As expected, the trend component has the highest variance. 
+
+# Section 3: Forecasting with Prophet
+
+## 3.1 Prophet 
+
+Prophet is an open-source forecasting tool developed by Meta that is  useful for handling time series data with trends and seasonality. It is an ideal choice to deal with our data as it is robust and intuitive.
+
+The Prophet model uses additive decomposition to model the time series data. The observed value \( y(t) \) is decomposed as follows:
+
+\[
+y(t) = g(t) + s(t) + h(t) + \epsilon_t
+\]
+
+Where
+
+- \( g(t) \) represents the piecewise linear trend
+- \( s(t) \) represents the Fourier series seasonality
+- \( h(t) \) represents holiday effects (if included)
+- \( \epsilon_t \) is the error term (assumed to be normally distributed)
+
+
+The piecewise linear trend \( g(t) \) is given by:
+
+\[
+g(t) = (k + a(t)^\top \delta)t + (m + a(t)^\top \gamma)
+\]
+
+Where
+
+- \( k \) is the initial slope of the trend
+- \( \delta \) is a vector of coefficients for the time-dependent term
+- \( m \) is the initial level of the trend
+- \( \gamma \) is a vector of coefficients for the time-dependent term \( a(t) \), which represents the effect of external factors (like holidays) on the trend
+
+
+The seasonal component \( s(t) \) is modeled as a Fourier series:
+
+\[
+s(t) = \sum_{n=1}^{N} \left( a_n \cos\left(\frac{2 \pi n t}{P}\right) + b_n \sin\left(\frac{2 \pi n t}{P}\right) \right)
+\]
+
+Where
+
+- \( N \) is the number of Fourier terms
+- \( a_n \) and \( b_n \) are the coefficients for each Fourier term
+- \( P \) is the period of the seasonality
+
+
+The error term \( \epsilon_t \) is assumed to follow a normal distribution with mean zero and standard deviation \( \sigma \):
+
+\[
+\epsilon_t \sim \text{Normal}(0, \sigma)
+\]
+
+## 3.2 Using Prophet forecasting on different time frames 
+
+Gasoline prices are influenced by multiple factors, including long-term trends, seasonal variations (such as increased demand during summer months), and unexpected fluctuations due to geopolitical or economic events. Prophet’s ability to model these components separately allow for more accurate forecasts.Below we have a plot showing historical gasoline prices, model fit by Prophet and a 1 year forecast. 
+
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+model = prpredict.prophetmodel = prophet::prophet(gas.df) # Using prophet forecaster
+future = prophet::make_future_dataframe(model, periods=1, freq="year",include_history = TRUE) # Make dataframe with future dates for forecasting.
+forecast = predict(model, future) # Predict using the prophet model.
+
+plot(model,forecast,
+    main= "Gasoline Prices Forecast",
+    xlabel="Year",ylabel="Gasoline Price",
+    ) # Plotting forecast
+```
+
+We can see the "predicted" values seem to be quite close to the actual, other than points of exceptional volatility ( like the 2008 financial crisis, where there is quite a large discrepancy). The 1 year forecast seems to follow the general trend of the data and based off the previous result, this could be fairly accurate too. 
+
+Below, we have the 2 year and 4 year forecast which seems to follow the trend too. 
+```{r, echo=TRUE,message=FALSE, warning=FALSE}
+model = prophet::prophet(gas.df) # Using prophet forecaster
+future = prophet::make_future_dataframe(model, periods=2, freq="year",include_history = TRUE)
+forecast = predict(model, future)
+
+intplot <- prophet:::dyplot.prophet(model, forecast, uncertainty=TRUE) # Plotting interactive plot (more user-friendly)
+
+intplot
+
+model = prophet::prophet(gas.df)
+future = prophet::make_future_dataframe(model, periods=4, freq="year",include_history = TRUE)
+forecast = predict(model, future)
+
+intplot <- prophet:::dyplot.prophet(model, forecast, uncertainty=TRUE)
+
+intplot
+
+```
+We can see the 4 year forecast exhibits a downward trend, which is different from the overall increasing linear trend exhibiting before, which is worth noting. 
+
+# Section 4: Conclusion
+
+Overall, the time series and Prophet analysis reveals an interplay between long-term trends and volatility of the real-time markets. The linear regression model confirmed an upward trajectory in gasoline prices. Decomposing the time series showed the 2008 volatility, and the seasonal component showed consistent summer price surges aligning with demand. We saw heteroscedasity and tackled it with a Box-Cox transform. 
+
+It can be seen in the plots that Prophet struggled to predict abrupt geopolitical shocks, highlighting the limitations of forecasting with purely historical data. Otherwise, it did a very good job of modelling and predicting data points with a high level of accuracy. 
+
+This project is useful in understanding the intricacies of one element of the commodities market, and learning what influences its behaviour so that it can be "predicted" better. 
